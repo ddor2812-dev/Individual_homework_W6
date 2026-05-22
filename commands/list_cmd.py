@@ -49,7 +49,22 @@ def _list_ec2(want, missing):
     Returns:
         list of (instance_id, instance_type, state, tags_dict) tuples
     """
-    raise NotImplementedError("TODO: implement _list_ec2 — see test_list.py for expected behavior")
+    ec2 = boto3.client("ec2")
+    paginator = ec2.get_paginator("describe_instances")
+    rows = []
+    for page in paginator.paginate():
+        for reservation in page.get("Reservations", []):
+            for instance in reservation.get("Instances", []):
+                state = instance["State"]["Name"]
+                tags = tags_to_dict(instance.get("Tags", []))
+                if tags_match(tags, want, missing):
+                    rows.append((
+                        instance["InstanceId"],
+                        instance["InstanceType"],
+                        state,
+                        tags
+                    ))
+    return rows
 
 
 def _list_rds(want, missing):
@@ -61,7 +76,25 @@ def _list_rds(want, missing):
     Returns:
         list of (db_id, db_class, db_status, tags_dict) tuples
     """
-    raise NotImplementedError("TODO: implement _list_rds")
+    rds = boto3.client("rds")
+    paginator = rds.get_paginator("describe_db_instances")
+    rows = []
+    for page in paginator.paginate():
+        for db in page.get("DBInstances", []):
+            arn = db["DBInstanceArn"]
+            try:
+                tag_response = rds.list_tags_for_resource(ResourceName=arn)
+                tags = tags_to_dict(tag_response.get("TagList", []))
+            except Exception:
+                tags = {}
+            if tags_match(tags, want, missing):
+                rows.append((
+                    db["DBInstanceIdentifier"],
+                    db["DBInstanceClass"],
+                    db["DBInstanceStatus"],
+                    tags
+                ))
+    return rows
 
 
 def _list_s3(want, missing):
@@ -73,7 +106,28 @@ def _list_s3(want, missing):
     Returns:
         list of (bucket_name, "bucket", "active", tags_dict) tuples
     """
-    raise NotImplementedError("TODO: implement _list_s3")
+    s3 = boto3.client("s3")
+    rows = []
+    try:
+        response = s3.list_buckets()
+    except Exception:
+        response = {}
+    for bucket in response.get("Buckets", []):
+        name = bucket["Name"]
+        tags = {}
+        try:
+            tagging = s3.get_bucket_tagging(Bucket=name)
+            tags = tags_to_dict(tagging.get("TagSet", []))
+        except Exception:
+            pass
+        if tags_match(tags, want, missing):
+            rows.append((
+                name,
+                "bucket",
+                "active",
+                tags
+            ))
+    return rows
 
 
 def _list_volume(want, missing):
@@ -83,7 +137,24 @@ def _list_volume(want, missing):
         list of (volume_id, "<type>-<size>GB", state, tags_dict) tuples
         e.g. ("vol-0abc", "gp2-100GB", "in-use", {"purpose": "practice"})
     """
-    raise NotImplementedError("TODO: implement _list_volume")
+    ec2 = boto3.client("ec2")
+    paginator = ec2.get_paginator("describe_volumes")
+    rows = []
+    for page in paginator.paginate():
+        for volume in page.get("Volumes", []):
+            volume_id = volume["VolumeId"]
+            volume_type = volume["VolumeType"]
+            size = volume["Size"]
+            state = volume["State"]
+            tags = tags_to_dict(volume.get("Tags", []))
+            if tags_match(tags, want, missing):
+                rows.append((
+                    volume_id,
+                    f"{volume_type}-{size}GB",
+                    state,
+                    tags
+                ))
+    return rows
 
 
 DISPATCH = {
@@ -108,4 +179,28 @@ def run(args):
         args.tag          — list[str], each "key=value"
         args.missing_tag  — list[str], each "key"
     """
-    raise NotImplementedError("TODO: implement run() — see module docstring")
+    want = [parse_kv(t) for t in args.tag]
+    missing = args.missing_tag
+    rows = DISPATCH[args.type](want, missing)
+
+    filters_parts = []
+    for k, v in want:
+        filters_parts.append(f"{k}={v}")
+    for k in missing:
+        filters_parts.append(f"missing:{k}")
+
+    filters_str = " ".join(filters_parts)
+    if filters_str:
+        header = f"{args.type.upper()} {filters_str} — {len(rows)} found:"
+    else:
+        header = f"{args.type.upper()} (no filter) — {len(rows)} found:"
+
+    print(header)
+    print("-" * 78)
+    for r_id, r_type, r_state, r_tags in rows:
+        if r_tags:
+            tags_str = " ".join(f"{k}={v}" for k, v in sorted(r_tags.items()))
+        else:
+            tags_str = "(no tags)"
+        print(f"  {r_id:<26}{r_type:<15}{r_state:<14}{tags_str}")
+

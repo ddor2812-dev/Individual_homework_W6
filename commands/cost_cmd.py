@@ -66,4 +66,39 @@ def run(args):
         args.tag   — "key=value" string (REQUIRED)
         args.days  — int, default 7
     """
-    raise NotImplementedError("TODO: implement cost — see module docstring")
+    tag_key, tag_value = parse_kv(args.tag)
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=args.days)
+
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    ce = boto3.client("ce")
+
+    res = ce.get_cost_and_usage(
+        TimePeriod={"Start": start_str, "End": end_str},
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+        Filter={"Tags": {"Key": tag_key, "Values": [tag_value]}},
+        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    )
+
+    costs = defaultdict(float)
+    for day_result in res.get("ResultsByTime", []):
+        for group in day_result.get("Groups", []):
+            service = group["Keys"][0]
+            amount = float(group["Metrics"]["UnblendedCost"]["Amount"])
+            costs[service] += amount
+
+    sorted_services = sorted(costs.items(), key=lambda x: x[1], reverse=True)
+    total_cost = sum(costs.values())
+
+    yesterday_str = (end_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    print(f"Cost for {args.tag} over last {args.days} days ({start_str} → {yesterday_str}):")
+    print("-" * 60)
+    for service, cost in sorted_services:
+        print(f"  {service:<46}${cost:>9.2f}")
+    print("-" * 60)
+    print(f"  {'TOTAL':<46}${total_cost:>9.2f}")
+
